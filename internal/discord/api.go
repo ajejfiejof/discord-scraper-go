@@ -120,6 +120,26 @@ func (c *Client) FetchMessages(ctx context.Context, channelID, lastID, dir strin
 	return msgs, nil
 }
 
+// FetchMessagesRaw retrieves messages as a raw JSON payload using BufferPool.
+// Bypasses reflection, JSON parsing, and struct allocations.
+// Caller MUST call release() to return buffer to pool when finished.
+func (c *Client) FetchMessagesRaw(ctx context.Context, channelID, lastID, dir string, limit int) ([]byte, func(), error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	if dir == QueryAround {
+		limit = 50
+	}
+	q := url.Values{}
+	q.Set("limit", strconv.Itoa(limit))
+	if lastID != "" && dir != "" {
+		q.Set(dir, lastID)
+	} else if lastID != "" {
+		q.Set("before", lastID)
+	}
+	return c.doRaw(ctx, http.MethodGet, "/channels/"+channelID+"/messages", q)
+}
+
 // FetchAllMessages is a helper that paginates until exhaustion or ctx cancel.
 // Calls yield for each batch.
 func (c *Client) FetchAllMessages(ctx context.Context, channelID string, yield func([]Message) error) error {

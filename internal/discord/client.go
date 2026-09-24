@@ -6,23 +6,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pratherbytecraft/discord-scraper-go/internal/ratelimit"
 	"github.com/pratherbytecraft/discord-scraper-go/pkg/snowflake"
 )
 
+// BufferPool provides reusable 128 KiB byte buffers to eliminate network heap allocations.
+// Specifically tailored to fit within L2/L3 cache architectures without triggering GC churn.
+var BufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 128*1024)
+		return &b
+	},
+}
+
 // Client is a high-performance Discord REST client with integrated rate-limiting,
 // connection pooling, retries, and 429 handling.
-// Design goals:
-//   - reuse http.Client (keep-alives, h2)
-//   - respect Discord's bucket/global limits without over-throttling
-//   - retry on 429 with server-provided retry_after
-//   - bounded retries for 5xx with exponential backoff
 type Client struct {
 	token      string
 	httpClient *http.Client
@@ -44,7 +50,7 @@ func WithHTTPClient(hc *http.Client) ClientOption {
 	return func(c *Client) { c.httpClient = hc }
 }
 
-// WithTargetRPS sets ban-safe global target requests per second (30-35 recommended, max 45).
+// WithTargetRPS sets ban-safe global target requests per second (30-40 recommended, max 45).
 func WithTargetRPS(rps int) ClientOption {
 	return func(c *Client) {
 		if c.limiter != nil {
@@ -58,8 +64,7 @@ func WithLimiter(l *ratelimit.Limiter) ClientOption {
 	return func(c *Client) { c.limiter = l }
 }
 
-// NewClient creates a Discord client. Token may be "Bot <token>" or raw user token
-// (Discrub uses user tokens via Authorization header as-is). We pass it verbatim.
+// NewClient creates a Discord client. Token may be "Bot <token>" or raw user token.
 func NewClient(token string, opts ...ClientOption) *Client {
 	c := &Client{
 		token:   token,
@@ -69,9 +74,14 @@ func NewClient(token string, opts ...ClientOption) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
-				MaxIdleConns:        256,
-				MaxIdleConnsPerHost: 64,
-				MaxConnsPerHost:     0, // unlimited, let limiter control
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				MaxIdleConns:        128,
+				MaxIdleConnsPerHost: 32,
+				MaxConnsPerHost:     0, // unlimited, limiter manages dispatch
 				IdleConnTimeout:     90 * time.Second,
 				DisableCompression:  false,
 				ForceAttemptHTTP2:   true,
@@ -249,23 +259,148 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	return fmt.Errorf("max retries exceeded for %s %s", method, fullURL)
 }
 
-// pathBucketKey returns a coarse route key (helps before receiving bucket header).
-// e.g. /channels/123/messages -> /channels/:id/messages
-//      /guilds/123/messages/search -> /guilds/:id/messages/search
-func pathBucketKey(path string) string {
-	// Split and replace numeric/snowflake-like IDs with :id
-	parts := strings.Split(path, "/")
-	for i, p := range parts {
-		if len(p) >= 16 && isSnowflakeLike(p) {
-			parts[i] = ":id"
-		} else if i > 0 && (parts[i-1] == "channels" || parts[i-1] == "guilds" || parts[i-1] == "users" || parts[i-1] == "messages" || parts[i-1] == "reactions") {
-			// ID after these segments
-			if len(p) > 0 && p[0] >= '0' && p[0] <= '9' {
-				// Could still be :id if length short but numeric
-				if _, err := strconv.ParseInt(p, 10, 64); err == nil {
-					parts[i] = ":id"
+// doRaw executes an HTTP request and reads the response directly into a pooled buffer.
+// Returns the raw byte slice, a release function to return the buffer to BufferPool, and any error.
+func (c *Client) doRaw(ctx context.Context, method, path string, query url.Values) ([]byte, func(), error) {
+	fullURL := c.baseURL + path
+	if len(query) > 0 {
+		fullURL += "?" + query.Encode()
+	}
+
+	bucketFallback := method + ":" + pathBucketKey(path)
+	maxRetries := 12
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if err := c.limiter.Wait(ctx, bucketFallback); err != nil {
+			return nil, nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, fullURL, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		req.Header.Set("Authorization", c.token)
+		req.Header.Set("User-Agent", c.userAgent)
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
+			backoff := time.Duration(200*(1<<attempt)) * time.Millisecond
+			if backoff > 5*time.Second {
+				backoff = 5 * time.Second
+			}
+			select {
+			case <-time.After(backoff):
+				continue
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			}
+		}
+
+		bucketKey := ratelimit.BucketKey(resp.Header, bucketFallback)
+		c.limiter.UpdateFromHeaders(bucketKey, resp.Header)
+		if bucketKey != bucketFallback {
+			c.limiter.UpdateFromHeaders(bucketFallback, resp.Header)
+		}
+
+		switch resp.StatusCode {
+		case http.StatusOK, http.StatusCreated:
+			bufPtr := BufferPool.Get().(*[]byte)
+			buf := (*bufPtr)[:0]
+
+			tmp := make([]byte, 32*1024)
+			var readErr error
+			for {
+				n, rerr := resp.Body.Read(tmp)
+				if n > 0 {
+					buf = append(buf, tmp[:n]...)
+				}
+				if rerr != nil {
+					if rerr != io.EOF {
+						readErr = rerr
+					}
+					break
 				}
 			}
+			resp.Body.Close()
+			if readErr != nil {
+				*bufPtr = buf[:0]
+				BufferPool.Put(bufPtr)
+				return nil, nil, readErr
+			}
+			release := func() {
+				*bufPtr = buf[:0]
+				BufferPool.Put(bufPtr)
+			}
+			return buf, release, nil
+
+		case http.StatusNoContent:
+			resp.Body.Close()
+			return nil, func() {}, nil
+
+		case http.StatusTooManyRequests:
+			data, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			var rl rateLimitBody
+			_ = json.Unmarshal(data, &rl)
+			if rl.RetryAfter == 0 {
+				if v := resp.Header.Get("Retry-After"); v != "" {
+					if f, err := strconv.ParseFloat(v, 64); err == nil {
+						rl.RetryAfter = f
+					}
+				}
+			}
+			if rl.RetryAfter == 0 {
+				rl.RetryAfter = 1.0
+			}
+			c.limiter.Register429(bucketKey, rl.RetryAfter, rl.Global)
+			if bucketKey != bucketFallback {
+				c.limiter.Register429(bucketFallback, rl.RetryAfter, rl.Global)
+			}
+			continue
+
+		default:
+			if resp.StatusCode >= 500 && resp.StatusCode < 600 && attempt < maxRetries-1 {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				backoff := time.Duration(300*(1<<attempt)) * time.Millisecond
+				if backoff > 5*time.Second {
+					backoff = 5 * time.Second
+				}
+				select {
+				case <-time.After(backoff):
+					continue
+				case <-ctx.Done():
+					return nil, nil, ctx.Err()
+				}
+			}
+			data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return nil, nil, &apiError{Status: resp.StatusCode, Body: string(data), URL: fullURL}
+		}
+	}
+	return nil, nil, fmt.Errorf("max retries exceeded for %s %s", method, fullURL)
+}
+
+// pathBucketKey returns a coarse route key (helps before receiving bucket header).
+// In Discord API, major parameters (channel_id, guild_id) form independent rate-limit buckets.
+func pathBucketKey(path string) string {
+	parts := strings.Split(path, "/")
+	if len(parts) >= 4 && parts[1] == "channels" && parts[3] == "messages" {
+		if len(parts) == 4 {
+			return path // e.g. /channels/123/messages
+		}
+		return "/channels/" + parts[2] + "/messages/:id"
+	}
+	if len(parts) >= 4 && parts[1] == "guilds" && parts[3] == "channels" {
+		return path
+	}
+	for i, p := range parts {
+		if i > 2 && len(p) >= 16 && isSnowflakeLike(p) {
+			parts[i] = ":id"
 		}
 	}
 	return strings.Join(parts, "/")
