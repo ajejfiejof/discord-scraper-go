@@ -310,6 +310,7 @@ func (e *Extractor) scrapeChannels(ctx context.Context, guildID string, channelI
 }
 
 // scrapeChannelObjects is the core parallel scraping loop.
+// Discrub parity: 403/404 Missing Access on private/voice channels is non-fatal — log and continue.
 func (e *Extractor) scrapeChannelObjects(ctx context.Context, guildID string, channels []discord.Channel) error {
 	concurrency := e.cfg.Concurrency
 	if concurrency <= 0 {
@@ -329,7 +330,19 @@ func (e *Extractor) scrapeChannelObjects(ctx context.Context, guildID string, ch
 		}
 		g.Go(func() error {
 			defer sem.Release(1)
-			return e.scrapeSingleChannel(ctx, guildID, chCopy)
+			if err := e.scrapeSingleChannel(ctx, guildID, chCopy); err != nil {
+				// Only abort on context cancel; 403/404 are expected for some channels
+				if ctx.Err() != nil {
+					return err
+				}
+				if isPermissionError(err) {
+					e.log.Warn("skipping channel (no access)", "channel", chCopy.ID, "name", safeName(chCopy.Name), "err", err)
+					return nil
+				}
+				e.log.Warn("channel failed (non-fatal, continuing)", "channel", chCopy.ID, "err", err)
+				return nil
+			}
+			return nil
 		})
 	}
 
@@ -339,6 +352,17 @@ func (e *Extractor) scrapeChannelObjects(ctx context.Context, guildID string, ch
 
 	e.log.Info("all channels done", "total_msgs", e.totalMsgs.Load(), "failed_channels", e.failedChans.Load())
 	return nil
+}
+
+func isPermissionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// discord.apiError with Status 403/404
+	type apiErr interface{ Error() string }
+	// Try to unwrap *discord.apiError via string check (avoid import cycle)
+	s := err.Error()
+	return contains(s, "403") || contains(s, "50001") || contains(s, "Missing Access") || contains(s, "50013")
 }
 
 // scrapeSingleChannel paginates a single channel sequentially, streaming batches to writer.
@@ -391,6 +415,10 @@ func (e *Extractor) scrapeSingleChannel(ctx context.Context, guildID string, ch 
 			rawPayload, release, err := e.client.FetchMessagesRaw(ctx, ch.ID, before, discord.QueryBefore, 100)
 			if err != nil {
 				e.failedChans.Add(1)
+				if isPermissionError(err) {
+					e.log.Warn("skip channel (no access, raw)", "channel", ch.ID, "err", err)
+					return nil
+				}
 				e.log.Error("fetch messages raw failed", "channel", ch.ID, "name", safeName(ch.Name), "before", before, "err", err)
 				return err
 			}
@@ -453,6 +481,10 @@ func (e *Extractor) scrapeSingleChannel(ctx context.Context, guildID string, ch 
 		raw, err := e.client.FetchMessages(ctx, ch.ID, before, discord.QueryBefore, 100)
 		if err != nil {
 			e.failedChans.Add(1)
+			if isPermissionError(err) {
+				e.log.Warn("skip channel (no access)", "channel", ch.ID, "err", err)
+				return nil
+			}
 			e.log.Error("fetch messages failed", "channel", ch.ID, "name", safeName(ch.Name), "before", before, "err", err)
 			return err
 		}
