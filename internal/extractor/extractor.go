@@ -192,31 +192,43 @@ func (e *Extractor) ScrapeGuild(ctx context.Context, guildID string) error {
 		e.log.Info("filtered to whitelisted channels", "remaining", len(textChannels))
 	}
 
-	// Second pass: per-channel archived threads discovery (parallel, rate-limited)
-	if e.cfg.IncludeThreads {
-		textChannels = e.discoverArchivedThreads(ctx, textChannels)
-		e.log.Info("after archived thread discovery", "total_channels_including_threads", len(textChannels))
-	}
-
-	ids := make([]string, len(textChannels))
-	for i, ch := range textChannels {
-		ids[i] = ch.ID
-	}
-	// Build channel map for writer name resolution
-	chMap := make(map[string]discord.Channel, len(textChannels))
-	for _, ch := range textChannels {
-		chMap[ch.ID] = ch
-	}
-
-	// We already have full channel objects, so scrape via channel objects directly
+	// Write ASAP: scrape main text channels first, then threads
+	// This ensures DB starts receiving messages within seconds, not after 80s of thread discovery
+	e.log.Info("starting message scrape (main channels, writing to DB asap)", "channels", len(textChannels))
 	if err := e.scrapeChannelObjects(ctx, guildID, textChannels); err != nil {
 		return err
+	}
+	e.log.Info("main channels done, discovering archived threads", "messages_so_far", e.totalMsgs.Load())
+
+	// Second pass: per-channel archived threads discovery (parallel, rate-limited) — now after main scrape so DB already hot
+	if e.cfg.IncludeThreads {
+		extra := e.discoverArchivedThreads(ctx, textChannels)
+		// Filter to only new threads not already scraped
+		seen := make(map[string]bool, len(textChannels))
+		for _, ch := range textChannels {
+			seen[ch.ID] = true
+		}
+		var newThreads []discord.Channel
+		for _, th := range extra {
+			if !seen[th.ID] {
+				newThreads = append(newThreads, th)
+			}
+		}
+		if len(newThreads) > 0 {
+			e.log.Info("scraping discovered threads", "count", len(newThreads))
+			if err := e.scrapeChannelObjects(ctx, guildID, newThreads); err != nil {
+				e.log.Warn("thread scrape encountered errors", "err", err)
+			}
+		} else {
+			e.log.Info("no new archived threads to scrape")
+		}
+		textChannels = append(textChannels, extra...)
 	}
 
 	elapsed := time.Since(start)
 	e.log.Info("guild scrape complete",
 		"guild", guildID,
-		"channels", len(textChannels),
+		"channels_total", len(textChannels),
 		"messages", e.totalMsgs.Load(),
 		"elapsed", elapsed.Round(time.Millisecond),
 		"msg_per_sec", float64(e.totalMsgs.Load())/elapsed.Seconds(),
