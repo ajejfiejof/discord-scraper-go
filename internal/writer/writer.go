@@ -98,7 +98,8 @@ func (w *Writer) ensureFile(guildID, channelID, channelName string) (*channelFil
 	if err != nil {
 		return nil, err
 	}
-	bw := bufio.NewWriterSize(f, 256*1024)
+	// 64 KiB buffer: fits in Haswell L2 cache (256 KiB/core), saves memory on 8GB ThinkPad T440p
+	bw := bufio.NewWriterSize(f, 64*1024)
 
 	cf := &channelFile{f: f, bw: bw, count: 0}
 	if w.format == "jsonl" || w.format == "json" {
