@@ -44,6 +44,20 @@ func WithHTTPClient(hc *http.Client) ClientOption {
 	return func(c *Client) { c.httpClient = hc }
 }
 
+// WithTargetRPS sets ban-safe global target requests per second (30-35 recommended, max 45).
+func WithTargetRPS(rps int) ClientOption {
+	return func(c *Client) {
+		if c.limiter != nil {
+			c.limiter.SetTargetRPS(rps)
+		}
+	}
+}
+
+// WithLimiter injects a custom limiter (for testing).
+func WithLimiter(l *ratelimit.Limiter) ClientOption {
+	return func(c *Client) { c.limiter = l }
+}
+
 // NewClient creates a Discord client. Token may be "Bot <token>" or raw user token
 // (Discrub uses user tokens via Authorization header as-is). We pass it verbatim.
 func NewClient(token string, opts ...ClientOption) *Client {

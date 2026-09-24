@@ -46,6 +46,12 @@ func rootCmd() *cobra.Command {
 		verboseFlag    bool
 		includeThreadsFlag bool
 		dryRunFlag     bool
+		targetRPSFlag  int
+		resumeFlag     bool
+		duckdbFlag     bool
+		parquetFlag    bool
+		mediaBudgetFlag int64
+		noMediaFlag    bool
 	)
 
 	cmd := &cobra.Command{
@@ -55,15 +61,16 @@ func rootCmd() *cobra.Command {
 
 Features:
   • Concurrent channel scraping with bounded worker pools (goroutines + semaphore)
-  • Token-bucket rate limiter that respects Discord's X-RateLimit headers + 429 retry_after
-  • Streaming NDJSON/CSV output (no RAM blowup on huge servers)
+  • Ban-safe adaptive limiter: global token bucket (32 RPS default) + per-bucket Remaining/Reset-After + jitter
+  • Streaming NDJSON/CSV/Parquet output (no RAM blowup) + DuckDB ingest (read_json/read_parquet)
   • Guild, channel, thread, role, and message extraction
-  • Resume-safe pagination (cursor = before snowflake)
+  • Resume-safe checkpoint (.checkpoint.json) + snowflake ID date filtering (no time.Parse hot path)
+  • Media budget 20GB (text-first, skip attachments when exceeded, warning)
   • Filtering by date/content/author (client-side fast path, server-side search optional)
 
 Examples:
-  # Scrape whole guild
-  scraper --token $DISCORD_TOKEN --guild 123456789012345678 --output ./output --concurrency 24
+  # Scrape whole guild (ban-safe: 12 workers, 32 RPS, resume, duckdb)
+  scraper --token $DISCORD_TOKEN --guild 123456789012345678 --output ./output --concurrency 12 --target-rps 32 --resume --duckdb
 
   # Scrape single channel
   scraper --token $TOKEN --channel 987654321098765432
@@ -96,6 +103,26 @@ Environment:
 			cfg.SearchContent = contentFlag
 			cfg.Verbose = verboseFlag
 			cfg.IncludeThreads = includeThreadsFlag
+			if targetRPSFlag > 0 {
+				cfg.TargetRPS = targetRPSFlag
+				cfg.RequestsPerSecond = targetRPSFlag
+			}
+			cfg.Resume = resumeFlag
+			cfg.DuckDB = duckdbFlag
+			cfg.Parquet = parquetFlag
+			if parquetFlag && cfg.Format == "jsonl" {
+				cfg.Format = "parquet"
+			}
+			if noMediaFlag {
+				cfg.DownloadAttachments = false
+				cfg.MediaBudgetBytes = 0
+			} else if mediaBudgetFlag > 0 {
+				cfg.MediaBudgetBytes = mediaBudgetFlag * 1024 * 1024 * 1024
+			}
+			// Text-first: media disabled by default unless explicitly enabled, budget 20GB when enabled
+			if cfg.MediaBudgetBytes == 0 && !noMediaFlag {
+				// keep default 20GB if DownloadAttachments false, media just tracks but doesn't download
+			}
 
 			if guildFlag != "" {
 				cfg.GuildID = strings.TrimSpace(guildFlag)
@@ -157,14 +184,19 @@ Environment:
 				"output", cfg.OutputDir,
 				"format", cfg.Format,
 				"concurrency", cfg.Concurrency,
+				"target_rps", cfg.TargetRPS,
 				"guild", cfg.GuildID,
 				"guilds", strings.Join(cfg.GuildIDs, ","),
 				"channel", cfg.ChannelID,
 				"channels", strings.Join(cfg.ChannelIDs, ","),
 				"include_threads", cfg.IncludeThreads,
+				"resume", cfg.Resume,
+				"duckdb", cfg.DuckDB,
+				"parquet", cfg.Parquet,
+				"media_budget_gb", cfg.MediaBudgetBytes/1024/1024/1024,
 			)
 
-			client := discord.NewClient(cfg.Token)
+			client := discord.NewClient(cfg.Token, discord.WithTargetRPS(cfg.TargetRPS))
 
 			// Quick auth check
 			log.Info("verifying token")
@@ -174,6 +206,14 @@ Environment:
 			}
 			log.Info("authenticated", "user", self.Username, "id", self.ID)
 
+			// Writer: jsonl/csv default; parquet/duckdb generate ingest SQL for DuckDB read_json/read_parquet
+			// Ban-safe: we always write jsonl as ground truth (fastest pure-Go), DuckDB reads it natively.
+			// Parquet direct is available via writer.ParquetWriter but extractor uses Writer interface; for now parquet
+			// is produced via DuckDB COPY in ingest.duckdb.sql after scrape (no CGO needed).
+			if cfg.Parquet && cfg.Format == "jsonl" {
+				log.Info("parquet flag: will generate parquet via DuckDB COPY after jsonl scrape (see ingest.duckdb.sql)")
+				cfg.DuckDB = true // parquet needs duckdb ingest
+			}
 			w, err := writer.New(cfg.OutputDir, cfg.Format)
 			if err != nil {
 				return fmt.Errorf("create writer: %w", err)
@@ -181,6 +221,13 @@ Environment:
 			defer func() {
 				if err := w.Close(); err != nil {
 					log.Error("writer close failed", "err", err)
+				}
+				if cfg.DuckDB || cfg.Parquet || cfg.Format == "parquet" {
+					if err := w.GenerateDuckDBArtifacts(); err != nil {
+						log.Warn("duckdb artifact generation failed", "err", err)
+					} else {
+						log.Info("duckdb artifacts ready", "ingest_sql", cfg.OutputDir+"/ingest.duckdb.sql", "query_sh", cfg.OutputDir+"/query.sh")
+					}
 				}
 			}()
 
@@ -212,14 +259,20 @@ Environment:
 	cmd.Flags().StringVar(&channelFlag, "channel", "", "Single channel ID to scrape")
 	cmd.Flags().StringVar(&channelsFlag, "channels", "", "Comma-separated channel IDs")
 	cmd.Flags().StringVar(&outputFlag, "output", "./output", "Output directory")
-	cmd.Flags().StringVar(&formatFlag, "format", "jsonl", "Output format: jsonl (default), json, csv")
-	cmd.Flags().IntVar(&concurrencyFlg, "concurrency", 16, "Max concurrent channel workers (1-64). Higher = faster, but more rate-limit hits")
+	cmd.Flags().StringVar(&formatFlag, "format", "jsonl", "Output format: jsonl (default), json, csv, parquet")
+	cmd.Flags().IntVar(&concurrencyFlg, "concurrency", 12, "Max concurrent channel workers (1-64, default 12 ban-safe). Higher = faster but more 429")
+	cmd.Flags().IntVar(&targetRPSFlag, "target-rps", 32, "Global target requests/sec (32 ban-safe, max 45; Discord allows 50). Lower = safer")
 	cmd.Flags().StringVar(&beforeFlag, "before", "", "Only messages before this date (YYYY-MM-DD or RFC3339)")
 	cmd.Flags().StringVar(&afterFlag, "after", "", "Only messages after this date (YYYY-MM-DD or RFC3339)")
 	cmd.Flags().StringVar(&contentFlag, "content", "", "Only messages containing this substring (case-insensitive, client-side filter)")
 	cmd.Flags().BoolVar(&verboseFlag, "verbose", false, "Verbose debug logging")
 	cmd.Flags().BoolVar(&includeThreadsFlag, "include-threads", true, "Include archived and active threads")
 	cmd.Flags().BoolVar(&dryRunFlag, "dry-run", false, "Validate args and exit without scraping")
+	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "Resume from .checkpoint.json (skip already-scraped messages)")
+	cmd.Flags().BoolVar(&duckdbFlag, "duckdb", false, "Generate DuckDB ingest SQL + query.sh (query JSONL via read_json/read_parquet)")
+	cmd.Flags().BoolVar(&parquetFlag, "parquet", false, "Also write Parquet (SNAPPY, 100MB row-groups) for DuckDB read_parquet")
+	cmd.Flags().Int64Var(&mediaBudgetFlag, "media-budget-gb", 20, "Media budget in GB for attachments (0=disabled, text always scraped)")
+	cmd.Flags().BoolVar(&noMediaFlag, "no-media", false, "Disable attachment downloads entirely (text-only, fastest, ban-safest)")
 
 	// Guild/channel inspection subcommand
 	cmd.AddCommand(inspectCmd())

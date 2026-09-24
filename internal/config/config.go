@@ -27,19 +27,33 @@ type Config struct {
 	HasTypes      []string
 	Pinned        *bool
 
-	// Performance tuning
-	RequestsPerSecond int // 0 = auto (rate-limit driven)
-	Resume            bool
+	// Performance tuning (ban-safe)
+	RequestsPerSecond int  // target RPS for global limiter (32 default, 0=auto)
+	TargetRPS         int  // alias for RequestsPerSecond
+	Resume            bool // resume from checkpoint (skips already-scraped messages)
 	Verbose           bool
+	CheckpointFile    string // path to resume checkpoint json (default <output>/.checkpoint.json)
+
+	// DuckDB / Parquet
+	DuckDB            bool   // also generate DuckDB ingest SQL + optional .duckdb file
+	Parquet           bool   // write parquet alongside jsonl (requires parquet-go)
+
+	// Media budget (20GB default when enabled)
+	MediaBudgetBytes int64 // 0 = disabled, else cap (e.g. 20*1024*1024*1024)
+	MediaConcurrency int   // download workers (default 4)
 }
 
-// Default returns sane defaults.
+// Default returns sane defaults (ban-safe: 12 concurrency, 32 RPS).
 func Default() Config {
 	return Config{
-		OutputDir:    "./output",
-		Format:       "jsonl",
-		Concurrency:  16,
-		IncludeThreads: true,
+		OutputDir:        "./output",
+		Format:           "jsonl",
+		Concurrency:      12,
+		IncludeThreads:   true,
+		TargetRPS:        32,
+		RequestsPerSecond: 32,
+		MediaBudgetBytes: 20 * 1024 * 1024 * 1024,
+		MediaConcurrency: 4,
 	}
 }
 
