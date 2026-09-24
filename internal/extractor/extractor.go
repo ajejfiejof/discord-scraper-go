@@ -360,11 +360,66 @@ func (e *Extractor) scrapeSingleChannel(ctx context.Context, guildID string, ch 
 	}
 	hasFilter := hasSnowflakeFilter || e.cfg.SearchContent != ""
 
+	isJSONL := e.cfg.Format == "jsonl" || e.cfg.Format == ""
+	var streamFilter *writer.StreamFilter
+	if isJSONL && hasFilter {
+		streamFilter = writer.NewStreamFilter(e.cfg.SearchContent, minID, maxID)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+
+		// Zero-copy raw stream path for JSONL: eliminates reflection, struct allocs, and GC pauses
+		if isJSONL {
+			rawPayload, release, err := e.client.FetchMessagesRaw(ctx, ch.ID, before, discord.QueryBefore, 100)
+			if err != nil {
+				e.failedChans.Add(1)
+				e.log.Error("fetch messages raw failed", "channel", ch.ID, "name", safeName(ch.Name), "before", before, "err", err)
+				return err
+			}
+			if len(rawPayload) == 0 {
+				release()
+				break
+			}
+
+			written, lastID, rawCount, werr := e.w.WriteRawBatch(ctx, guildID, ch, rawPayload, streamFilter)
+			release()
+			if werr != nil {
+				e.log.Error("write raw failed", "channel", ch.ID, "err", werr)
+				return werr
+			}
+			if rawCount == 0 {
+				break
+			}
+
+			e.totalMsgs.Add(written)
+			total += written
+			batches++
+			before = lastID
+
+			if e.cp != nil && batches%20 == 0 && before != "" {
+				_ = e.cp.Set(guildID, ch.ID, before, total)
+			}
+			if rawCount < 100 {
+				break
+			}
+			if hasSnowflakeFilter && minID != "" && lastID != "" {
+				if compareSnowflake(lastID, minID) < 0 {
+					break
+				}
+			}
+			if batches%20 == 0 {
+				e.log.Info("channel progress", "channel", ch.ID, "name", safeName(ch.Name), "batches", batches, "msgs", total, "media_used", mediaUsed(e.media))
+			}
+			if batches > 100000 {
+				e.log.Warn("channel pagination guard triggered", "channel", ch.ID)
+				break
+			}
+			continue
 		}
 
 		raw, err := e.client.FetchMessages(ctx, ch.ID, before, discord.QueryBefore, 100)
@@ -404,7 +459,6 @@ func (e *Extractor) scrapeSingleChannel(ctx context.Context, guildID string, ch 
 		}
 		// Early exit if we've passed AfterDate bound: all remaining msgs are older than minID
 		if hasSnowflakeFilter && minID != "" {
-			// raw is descending (newest first). If oldest in batch < minID, we're done.
 			if compareSnowflake(raw[rawLen-1].ID, minID) < 0 {
 				break
 			}
@@ -418,7 +472,6 @@ func (e *Extractor) scrapeSingleChannel(ctx context.Context, guildID string, ch 
 		}
 		if e.media != nil && e.media.Exceeded() {
 			e.log.Warn("media budget exceeded, skipping further attachment downloads", "used", e.media.Used(), "limit", e.media.Limit())
-			// Text still continues; media downloads are gated in downloader
 		}
 	}
 	if e.cp != nil && total > 0 {

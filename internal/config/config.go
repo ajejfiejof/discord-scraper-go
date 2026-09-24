@@ -43,15 +43,15 @@ type Config struct {
 	MediaConcurrency int   // download workers (default 4)
 }
 
-// Default returns sane defaults (ban-safe: 12 concurrency, 32 RPS).
+// Default returns hardware-optimized defaults (tuned for Intel 4-core/8-thread CPU like ThinkPad T440p).
 func Default() Config {
 	return Config{
 		OutputDir:        "./output",
 		Format:           "jsonl",
-		Concurrency:      12,
+		Concurrency:      8,  // 1 worker per logical thread on i7-4712MQ
 		IncludeThreads:   true,
-		TargetRPS:        32,
-		RequestsPerSecond: 32,
+		TargetRPS:        36, // high throughput, ban-safe headroom under Discord 50
+		RequestsPerSecond: 36,
 		MediaBudgetBytes: 20 * 1024 * 1024 * 1024,
 		MediaConcurrency: 4,
 	}
