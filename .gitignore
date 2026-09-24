@@ -1,0 +1,45 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/scraper
+/discord-scraper
+
+# Go
+vendor/
+*.test
+*.out
+coverage.html
+coverage.out
+
+# Output data (scraped exports)
+output/
+exports/
+data/
+*.jsonl
+*.csv
+
+# Env / secrets
+.env
+*.token
+config.yaml
+config.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep discrub-ext reference but ignore its build artifacts if copied
+discrub-ext/dist/
+discrub-ext/node_modules/
