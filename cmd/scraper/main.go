@@ -277,6 +277,7 @@ Environment:
 	cmd.Flags().BoolVar(&noMediaFlag, "no-media", false, "Disable attachment downloads entirely (text-only, fastest, ban-safest)")
 	cmd.Flags().BoolVar(&cfg.DownloadAttachments, "download-attachments", false, "Download attachments (images/files) with 20GB budget, text-first")
 	cmd.Flags().BoolVar(&cfg.IncludeReactions, "include-reactions", false, "Fetch reactions per message (extra API calls, Discrub parity, slower)")
+	cmd.Flags().BoolVar(&cfg.IncludeUsers, "include-users", true, "Fetch full user profiles for all visible authors (Discrub parity, important for analysis analysis)")
 
 	// Guild/channel inspection subcommand
 	cmd.AddCommand(inspectCmd())

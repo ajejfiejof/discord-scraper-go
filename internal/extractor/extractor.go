@@ -225,6 +225,14 @@ func (e *Extractor) ScrapeGuild(ctx context.Context, guildID string) error {
 		textChannels = append(textChannels, extra...)
 	}
 
+	// Enrich user profiles for all visible authors (Discrub parity, important for analysis analysis)
+	if e.cfg.IncludeUsers {
+		e.log.Info("starting user enrichment (all visible profiles)", "guild", guildID)
+		if err := e.EnrichUsers(ctx, guildID); err != nil {
+			e.log.Warn("user enrichment failed (non-fatal)", "err", err)
+		}
+	}
+
 	elapsed := time.Since(start)
 	e.log.Info("guild scrape complete",
 		"guild", guildID,

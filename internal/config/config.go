@@ -44,7 +44,7 @@ type Config struct {
 
 	// Discrub parity: reactions / users
 	IncludeReactions bool // fetch reactions per message (extra API calls, slower)
-	IncludeUsers     bool // fetch user lookups (future)
+	IncludeUsers     bool // fetch full user objects for all unique authors (Discrub fetchGuildUser parity)
 }
 
 // Default returns hardware-optimized defaults (tuned for Intel 4-core/8-thread CPU like ThinkPad T440p).
@@ -54,6 +54,7 @@ func Default() Config {
 		Format:           "jsonl",
 		Concurrency:      8,  // 1 worker per logical thread on i7-4712MQ
 		IncludeThreads:   true,
+		IncludeUsers:     true,
 		TargetRPS:        36, // high throughput, ban-safe headroom under Discord 50
 		RequestsPerSecond: 36,
 		MediaBudgetBytes: 20 * 1024 * 1024 * 1024,
