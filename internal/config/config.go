@@ -41,6 +41,10 @@ type Config struct {
 	// Media budget (20GB default when enabled)
 	MediaBudgetBytes int64 // 0 = disabled, else cap (e.g. 20*1024*1024*1024)
 	MediaConcurrency int   // download workers (default 4)
+
+	// Discrub parity: reactions / users
+	IncludeReactions bool // fetch reactions per message (extra API calls, slower)
+	IncludeUsers     bool // fetch user lookups (future)
 }
 
 // Default returns hardware-optimized defaults (tuned for Intel 4-core/8-thread CPU like ThinkPad T440p).

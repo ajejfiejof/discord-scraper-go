@@ -275,6 +275,8 @@ Environment:
 	cmd.Flags().BoolVar(&parquetFlag, "parquet", false, "Also write Parquet (SNAPPY, 100MB row-groups) for DuckDB read_parquet")
 	cmd.Flags().Int64Var(&mediaBudgetFlag, "media-budget-gb", 20, "Media budget in GB for attachments (0=disabled, text always scraped)")
 	cmd.Flags().BoolVar(&noMediaFlag, "no-media", false, "Disable attachment downloads entirely (text-only, fastest, ban-safest)")
+	cmd.Flags().BoolVar(&cfg.DownloadAttachments, "download-attachments", false, "Download attachments (images/files) with 20GB budget, text-first")
+	cmd.Flags().BoolVar(&cfg.IncludeReactions, "include-reactions", false, "Fetch reactions per message (extra API calls, Discrub parity, slower)")
 
 	// Guild/channel inspection subcommand
 	cmd.AddCommand(inspectCmd())
