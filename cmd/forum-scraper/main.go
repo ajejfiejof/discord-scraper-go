@@ -161,10 +161,44 @@ Docs: see docs/ARCHITECTURE.md (forum client mirrors discord/client.go)
 			paginate("top_weekly", func(ctx context.Context, page int) (*forum.TopicListResponse, error) { return client.FetchTop(ctx, "weekly", page) })
 			paginate("top_monthly", func(ctx context.Context, page int) (*forum.TopicListResponse, error) { return client.FetchTop(ctx, "monthly", page) })
 			paginate("top_all", func(ctx context.Context, page int) (*forum.TopicListResponse, error) { return client.FetchTop(ctx, "all", page) })
-			// Per-category 100% (copy cat for closure)
+			// Per-category 100% but capped at 20 pages/cat (was 100+ pages with 2 new/page jank) — 17×20=340 pages ~10m, then posts
 			for _, cat := range cats.CategoryList.Categories {
 				catCopy := cat
-				paginate(fmt.Sprintf("cat_%s", catCopy.Slug), func(ctx context.Context, page int) (*forum.TopicListResponse, error) {
+				// Cap per-category to 20 pages to avoid 100+ duplicate hell (general-chat gave +2 new/page after 30)
+				cappedPaginate := func(name string, fetch func(context.Context, int) (*forum.TopicListResponse, error)) {
+					for page := 0; page < 20; page++ {
+						resp, err := fetch(ctx, page)
+						if err != nil {
+							log.Warn("fetch page failed", "name", name, "page", page, "err", err)
+							break
+						}
+						if len(resp.TopicList.Topics) == 0 {
+							break
+						}
+						before := len(allTopics)
+						for _, t := range resp.TopicList.Topics {
+							allTopics[t.ID] = t
+						}
+						added := len(allTopics) - before
+						log.Info("topics page", "source", name, "page", page, "added", added, "total_unique", len(allTopics))
+						if resp.TopicList.MoreTopicsURL == "" && len(resp.TopicList.Topics) < 30 {
+							break
+						}
+						// Early break if 5 consecutive pages added <5 total
+						if page >= 5 && added < 2 {
+							// Check last 5 pages were low, but we don't track, just break if single page added <2 and page>10
+							if page > 10 && added < 2 {
+								break
+							}
+						}
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+					}
+				}
+				cappedPaginate(fmt.Sprintf("cat_%s", catCopy.Slug), func(ctx context.Context, page int) (*forum.TopicListResponse, error) {
 					return client.FetchCategory(ctx, catCopy.ID, page)
 				})
 			}
