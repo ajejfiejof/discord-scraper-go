@@ -1,7 +1,12 @@
 # DiscordScraperGo
 
-Blazing-fast, highly concurrent Discord scraper in Go — inspired by Discrub
+Blazing-fast, highly concurrent Discord scraper in Go — inspired by [Discrub](https://github.com/pratherbytecraft/discrub-ext) but rebuilt for maximal extraction speed with idiomatic Go concurrency.
+
 > **Goal:** extract **all** messages + metadata from a guild (server) at the highest sustainable throughput Discord's API allows, without the browser-extension overhead of Discrub.
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE) [![Go 1.27](https://img.shields.io/badge/Go-1.27-00ADD8.svg)](go.mod)
+
+**Docs:** [Architecture](docs/ARCHITECTURE.md) · [Usage](docs/USAGE.md) · [Rate Limits](docs/RATE_LIMITS.md) · [Database](docs/DATABASE.md) · [Contributing](docs/CONTRIBUTING.md)
 
 ---
 
@@ -51,7 +56,7 @@ pkg/snowflake      Snowflake ↔ time conversion (mirrors Discrub's generateSnow
 
 ```bash
 # Clone & build
-git clone https://github.com/Ashley Melanie Brooks. See LICENSE.
+git clone https://github.com/ajejfiejof/discord-scraper-go
 cd discord-scraper-go
 go build -o bin/scraper ./cmd/scraper
 
