@@ -47,9 +47,13 @@ func (s *Store) Get(guildID, channelID string) (Entry, bool) {
 func (s *Store) Set(guildID, channelID, lastID string, count int64) error {
 	s.mu.Lock()
 	s.data[s.Key(guildID, channelID)] = Entry{LastID: lastID, Count: count, Updated: time.Now().UTC()}
-	data := s.data
+	// Copy to avoid concurrent map iteration race with 16 workers
+	cp := make(map[string]Entry, len(s.data))
+	for k, v := range s.data {
+		cp[k] = v
+	}
 	s.mu.Unlock()
-	return s.flush(data)
+	return s.flush(cp)
 }
 
 func (s *Store) flush(data map[string]Entry) error {
