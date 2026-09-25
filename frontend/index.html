@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>DSA Archive Browser — Discord</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{font-family:system-ui,sans-serif;background:#0f0f0f;color:#eee;margin:0}
+  header{background:#1a1a1a;padding:16px;border-bottom:1px solid #333;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+  header h1{margin:0;font-size:20px}
+  header a{color:#5BCEFA;text-decoration:none}
+  .container{display:flex;height:calc(100vh - 60px)}
+  .sidebar{width:320px;background:#161616;border-right:1px solid #333;overflow:auto}
+  .main{flex:1;overflow:auto;padding:16px}
+  .channel{padding:8px 12px;cursor:pointer;border-bottom:1px solid #222}
+  .channel:hover{background:#222}
+  .channel.active{background:#cc0000;color:#fff}
+  .msg{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px;margin-bottom:12px}
+  .msg .meta{color:#888;font-size:12px;margin-bottom:6px}
+  .msg .content{white-space:pre-wrap;word-break:break-word}
+  input,select{padding:8px;border:1px solid #333;border-radius:6px;background:#222;color:#eee}
+  .kpi{padding:12px;background:#1a1a1a;border-bottom:1px solid #333;font-size:14px;color:#aaa}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏳️‍🌈 Discord Archive</h1>
+  <a href="/forum.html">→ Forum</a>
+  <a href="/insights.html">Insights</a>
+  <a href="https://github.com/ajejfiejof/discord-scraper-go" target="_blank">GitHub</a>
+  <span id="stats" style="margin-left:auto;color:#888"></span>
+</header>
+<div class="kpi" id="kpi">Loading stats…</div>
+<div class="container">
+  <div class="sidebar">
+    <div style="padding:12px;display:flex;gap:8px">
+      <input id="q" placeholder="search content…" style="flex:1" oninput="loadMessages()">
+      <select id="limit"><option>50</option><option>100</option><option>200</option></select>
+    </div>
+    <div id="channels">Loading channels…</div>
+  </div>
+  <div class="main" id="messages">Select a channel</div>
+</div>
+<script>
+let currentChannel=null;
+fetch('/api/stats').then(r=>r.json()).then(s=>{
+  document.getElementById('kpi').textContent = `${s.discord_msgs.toLocaleString()} msgs • ${s.discord_files} channels • ${s.discord_size} • Forum: ${s.forum_topics} topics ${s.forum_users} users ${s.forum_size}`;
+  document.getElementById('stats').textContent = `${s.discord_msgs.toLocaleString()} msgs`;
+});
+fetch('/api/discord/channels').then(r=>r.json()).then(data=>{
+  // data is either array or object with categories
+  let chans = data;
+  if(data.category_list) chans = data.category_list.categories;
+  else if(Array.isArray(data)) chans = data;
+  else if(data.channels) chans = data.channels;
+  // If it's guild channels, filter to text
+  if(chans.length && chans[0].type!==undefined){
+    chans = chans.filter(c=>[0,5,11,12,15].includes(c.type));
+  }
+  const el=document.getElementById('channels');
+  el.innerHTML='';
+  chans.forEach(c=>{
+    const div=document.createElement('div');
+    div.className='channel';
+    div.textContent=(c.name||c.slug||c.id)+' ('+c.id.slice(0,6)+')';
+    div.onclick=()=>{document.querySelectorAll('.channel').forEach(e=>e.classList.remove('active'));div.classList.add('active');currentChannel=c.id;loadMessages();};
+    el.appendChild(div);
+  });
+  // Auto-select first
+  if(chans[0]){ el.firstChild.click(); }
+});
+function loadMessages(){
+  if(!currentChannel) return;
+  const q=document.getElementById('q').value;
+  const limit=document.getElementById('limit').value;
+  document.getElementById('messages').innerHTML='Loading…';
+  fetch(`/api/discord/messages?channel=${currentChannel}&q=${encodeURIComponent(q)}&limit=${limit}`).then(r=>r.json()).then(d=>{
+    const cont=document.getElementById('messages');
+    cont.innerHTML=`<div style="color:#888;margin-bottom:8px">${d.count} msgs (q="${q}")</div>`;
+    (d.messages||[]).forEach(raw=>{
+      let m;
+      try{ m=JSON.parse(new TextDecoder().decode(new Uint8Array(raw))); }catch(e){ try{ m=JSON.parse(atob(raw)); }catch(e){ m={content: atob ? atob(raw) : raw, author:{username:'?'}, timestamp:''}; } }
+      // raw is base64 from Go json.RawMessage? Actually Go encodes as base64 for []byte in JSON, need to handle
+      // For now, try to use directly if already object
+      if(typeof raw === 'object' && raw.content!==undefined) m=raw;
+      const div=document.createElement('div');
+      div.className='msg';
+      const author=m.author?m.author.username:'?';
+      const ts=m.timestamp?new Date(m.timestamp).toLocaleString():'';
+      const content=(m.content||'').slice(0,2000);
+      div.innerHTML=`<div class=meta><b>${author}</b> • ${ts} • ${m.id||''}</div><div class=content>${escapeHtml(content)}</div>`;
+      cont.appendChild(div);
+    });
+  });
+}
+function escapeHtml(s){ return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+</script>
+</body>
+</html>
