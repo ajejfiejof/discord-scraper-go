@@ -1,7 +1,6 @@
 # DiscordScraperGo
 
-Blazing-fast, highly concurrent Discord scraper in Go — inspired by [Discrub](https://github.com/Ashley Melanie Brooks. See LICENSE.
-
+Blazing-fast, highly concurrent Discord scraper in Go — inspired by Discrub
 > **Goal:** extract **all** messages + metadata from a guild (server) at the highest sustainable throughput Discord's API allows, without the browser-extension overhead of Discrub.
 
 ---
