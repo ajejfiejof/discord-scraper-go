@@ -4,7 +4,13 @@ Blazing-fast, highly concurrent Discord scraper in Go — inspired by [Discrub](
 
 > **Goal:** extract **all** messages + metadata from a guild (server) at the highest sustainable throughput Discord's API allows, without the browser-extension overhead of Discrub.
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE) [![Go 1.27](https://img.shields.io/badge/Go-1.27-00ADD8.svg)](go.mod)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE) [![Go 1.27](https://img.shields.io/badge/Go-1.27-00ADD8.svg)](go.mod) [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](.github/CODE_OF_CONDUCT.md)
+
+[![LGBTQ+ Friendly](https://img.shields.io/badge/LGBTQ%2B%20Friendly-ff69b4?style=for-the-badge&logo=heart&logoColor=white)](https://en.wikipedia.org/wiki/LGBT) [![Trans Rights](https://img.shields.io/badge/Trans%20Rights-Human%20Rights-5BCEFA?style=for-the-badge&logo=transgender&logoColor=white)](https://en.wikipedia.org/wiki/Transgender_rights) [![Socialist](https://img.shields.io/badge/Socialist-Workers%20Power-cc0000?style=for-the-badge&logo=solidarity&logoColor=white)](https://en.wikipedia.org/wiki/Socialism) [![Democratic Socialist](https://img.shields.io/badge/Democratic%20Socialist-DSA-red?style=for-the-badge)](https://www.dsausa.org/) [![Workers of the World Unite](https://img.shields.io/badge/Workers%20of%20the%20World-Unite-darkred?style=for-the-badge)](https://en.wikipedia.org/wiki/Workers_of_the_world,_unite!)
+
+> **🏳️‍🌈 Trans liberation is workers' liberation. queer liberation is class struggle. No one is free until we are all free. Solidarity forever. ✊**
+>
+> *Built with queer rage and socialist hope on a ThinkPad T440p — for the movement, by the movement.*
 
 **Docs:** [Architecture](docs/ARCHITECTURE.md) · [Usage](docs/USAGE.md) · [Rate Limits](docs/RATE_LIMITS.md) · [Database](docs/DATABASE.md) · [Contributing](docs/CONTRIBUTING.md)
 
